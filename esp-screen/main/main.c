@@ -15,7 +15,8 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
 #include "driver/gpio.h"
-#include "driver/spi_master.h"
+//#include "driver/spi_master.h"
+#include "esp_lcd_io_i80.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "lvgl.h"
@@ -27,12 +28,32 @@
 
 static const char *TAG = "example";
 
+/*
 // Using SPI2 in the example
 #define LCD_HOST  SPI2_HOST
+*/
+#define LCD_HOST ESP_LCD_I80_BUS_HOST
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////// Please update the following configuration according to your LCD spec //////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#define EXAMPLE_PIN_NUM_DATA0     4
+#define EXAMPLE_PIN_NUM_DATA1     2
+#define EXAMPLE_PIN_NUM_DATA2     23
+#define EXAMPLE_PIN_NUM_DATA3     22
+#define EXAMPLE_PIN_NUM_DATA4     21
+#define EXAMPLE_PIN_NUM_DATA5     19
+#define EXAMPLE_PIN_NUM_DATA6     18
+#define EXAMPLE_PIN_NUM_DATA7     5
+#define EXAMPLE_PIN_NUM_PCLK     12    //WR
+#define EXAMPLE_PIN_NUM_RD     13    //RD
+#define EXAMPLE_PIN_NUM_CS     27
+#define EXAMPLE_PIN_NUM_DC     14   //RS
+#define EXAMPLE_PIN_NUM_RST    26
+#define EXAMPLE_PIN_NUM_BK_LIGHT   2
+#define EXAMPLE_DMA_BURST_SIZE  32
+
+
 #define EXAMPLE_LCD_PIXEL_CLOCK_HZ     (20 * 1000 * 1000)
 #define EXAMPLE_LCD_BK_LIGHT_ON_LEVEL  1
 #define EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL !EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
@@ -172,6 +193,7 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
 
+/*
     ESP_LOGI(TAG, "Initialize SPI bus");
     spi_bus_config_t buscfg = {
         .sclk_io_num = EXAMPLE_PIN_NUM_SCLK,
@@ -182,8 +204,30 @@ void app_main(void)
         .max_transfer_sz = EXAMPLE_LCD_H_RES * 80 * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
+*/
+    esp_lcd_i80_bus_handle_t i80_bus = NULL;
+    esp_lcd_i80_bus_config_t bus_config = {
+        .clk_src = LCD_CLK_SRC_DEFAULT,
+        .dc_gpio_num = EXAMPLE_PIN_NUM_DC,
+        .wr_gpio_num = EXAMPLE_PIN_NUM_PCLK,
+        .data_gpio_nums = {
+            EXAMPLE_PIN_NUM_DATA0,
+            EXAMPLE_PIN_NUM_DATA1,
+            EXAMPLE_PIN_NUM_DATA2,
+            EXAMPLE_PIN_NUM_DATA3,
+            EXAMPLE_PIN_NUM_DATA4,
+            EXAMPLE_PIN_NUM_DATA5,
+            EXAMPLE_PIN_NUM_DATA6,
+            EXAMPLE_PIN_NUM_DATA7,
+        },
+        .bus_width = 8,
+        .max_transfer_bytes = EXAMPLE_LCD_H_RES * 100 * sizeof(uint16_t), // transfer 100 lines of pixels (assume pixel is RGB565) at most in one transaction
+        .dma_burst_size = EXAMPLE_DMA_BURST_SIZE,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_i80_bus(&bus_config, &i80_bus));
 
     ESP_LOGI(TAG, "Install panel IO");
+/*
     esp_lcd_panel_io_handle_t io_handle = NULL;
     esp_lcd_panel_io_spi_config_t io_config = {
         .dc_gpio_num = EXAMPLE_PIN_NUM_LCD_DC,
@@ -196,14 +240,41 @@ void app_main(void)
     };
     // Attach the LCD to the SPI bus
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &io_handle));
-
+*/
+    esp_lcd_panel_io_handle_t io_handle = NULL;
+    esp_lcd_panel_io_i80_config_t io_config = {
+        .cs_gpio_num = EXAMPLE_PIN_NUM_CS,
+        .pclk_hz = EXAMPLE_LCD_PIXEL_CLOCK_HZ,
+        .trans_queue_depth = 10,
+        .dc_levels = {
+            .dc_idle_level = 0,
+            .dc_cmd_level = 0,
+            .dc_dummy_level = 0,
+            .dc_data_level = 1,
+        },
+        .lcd_cmd_bits = EXAMPLE_LCD_CMD_BITS,
+        .lcd_param_bits = EXAMPLE_LCD_PARAM_BITS,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i80(i80_bus, &io_config, &io_handle));
+/*
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = EXAMPLE_PIN_NUM_LCD_RST,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
         .bits_per_pixel = 16,
     };
-#if CONFIG_EXAMPLE_LCD_CONTROLLER_ILI9341
+*/
+    esp_lcd_panel_handle_t panel_handle = NULL;
+    esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = EXAMPLE_PIN_NUM_RST,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = 16,
+    };
+
+#if CONFIG_EXAMPLE_LCD_CONTROLLER_ST7789
+    ESP_LOGI(TAG, "Install ST7789 panel driver");
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle));
+#elif CONFIG_EXAMPLE_LCD_CONTROLLER_ILI9341
     ESP_LOGI(TAG, "Install ILI9341 panel driver");
     ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(io_handle, &panel_config, &panel_handle));
 #elif CONFIG_EXAMPLE_LCD_CONTROLLER_GC9A01
@@ -233,11 +304,17 @@ void app_main(void)
     // alloc draw buffers used by LVGL
     // it's recommended to choose the size of the draw buffer(s) to be at least 1/10 screen sized
     size_t draw_buffer_sz = EXAMPLE_LCD_H_RES * EXAMPLE_LVGL_DRAW_BUF_LINES * sizeof(lv_color16_t);
-
+/*
     void *buf1 = spi_bus_dma_memory_alloc(LCD_HOST, draw_buffer_sz, 0);
     assert(buf1);
     void *buf2 = spi_bus_dma_memory_alloc(LCD_HOST, draw_buffer_sz, 0);
     assert(buf2);
+*/
+    void *buf1 = esp_lcd_i80_alloc_draw_buffer(io_handle, draw_buffer_sz, 0);
+    assert(buf1);
+    void *buf2 = esp_lcd_i80_alloc_draw_buffer(io_handle, draw_buffer_sz, 0);
+    assert(buf2);
+
     // initialize LVGL draw buffers
     lv_display_set_buffers(display, buf1, buf2, draw_buffer_sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
     // associate the mipi panel handle to the display
